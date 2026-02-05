@@ -1,6 +1,12 @@
 from random import choice, randint, random, shuffle
 from enum import Enum
 import pygame, pgzero, pgzrun, sys
+from src.input import InputTracker
+
+from src.app import App
+from src.screens.menu import MenuScreen
+
+game = None
 
 # Check Python version number. sys.version_info gives version as a tuple, e.g. if (3,7,2,'final',0) for version 3.7.2.
 # Unlike many languages, Python can compare two tuples in the same way that you can compare numbers.
@@ -324,7 +330,7 @@ class Player(GravityActor):
         else:
             return False
 
-    def update(self):
+    def update(self, input_state):
         # Call GravityActor.update - parameter is whether we want to perform collision detection as we fall. If health
         # is zero, we want the player to just fall out of the level
         super().update(self.health > 0)
@@ -352,10 +358,11 @@ class Player(GravityActor):
             # We're not hurt
             # Get keyboard input. dx represents the direction the player is facing
             dx = 0
-            if keyboard.left:
+            if input_state and input_state.left:
                 dx = -1
-            elif keyboard.right:
+            elif input_state and input_state.right:
                 dx = 1
+
 
             if dx != 0:
                 self.direction_x = dx
@@ -366,7 +373,7 @@ class Player(GravityActor):
 
             # Do we need to create a new orb? Space must have been pressed and released, the minimum time between
             # orbs must have passed, and there is a limit of 5 orbs.
-            if space_pressed() and self.fire_timer <= 0 and len(game.orbs) < 5:
+            if input_state and input_state.fire_pressed and self.fire_timer <= 0 and len(game.orbs) < 5:
                 # x position will be 38 pixels in front of the player position, while ensuring it is within the
                 # bounds of the level
                 x = min(730, max(70, self.x + self.direction_x * 38))
@@ -376,14 +383,14 @@ class Player(GravityActor):
                 game.play_sound("blow", 4)
                 self.fire_timer = 20
 
-            if keyboard.up and self.vel_y == 0 and self.landed:
+            if input_state and input_state.jump_pressed and self.vel_y == 0 and self.landed:
                 # Jump
                 self.vel_y = -16
                 self.landed = False
                 game.play_sound("jump")
 
         # Holding down space causes the current orb (if there is one) to be blown further
-        if keyboard.space:
+        if input_state and input_state.fire_held:
             if self.blowing_orb:
                 # Increase blown distance up to a maximum of 120
                 self.blowing_orb.blown_frames += 4
@@ -567,13 +574,18 @@ class Game:
         # in the centre of the screen
         return WIDTH/2
 
-    def update(self):
+    def update(self, input_state=None):
         self.timer += 1
 
-        # Update all objects
-        for obj in self.fruits + self.bolts + self.enemies + self.pops + [self.player] + self.orbs:
+        # Update non-player objects first
+        for obj in self.fruits + self.bolts + self.enemies + self.pops + self.orbs:
             if obj:
                 obj.update()
+
+        # Update player with input
+        if self.player:
+            self.player.update(input_state)
+
 
         # Use list comprehensions to remove objects which are no longer wanted from the lists. For example, we recreate
         # self.fruits such that it contains all existing fruits except those whose time_to_live counter has reached zero
@@ -687,97 +699,21 @@ def draw_status():
         screen.blit(image, (x, 450))
         x += IMAGE_WIDTH[image]
 
-# Is the space bar currently being pressed down?
-space_down = False
-
-# Has the space bar just been pressed? i.e. gone from not being pressed, to being pressed
-def space_pressed():
-    global space_down
-    if keyboard.space:
-        if space_down:
-            # Space was down previous frame, and is still down
-            return False
-        else:
-            # Space wasn't down previous frame, but now is
-            space_down = True
-            return True
-    else:
-        space_down = False
-        return False
-
 # Pygame Zero calls the update and draw functions each frame
 
-class State(Enum):
-    MENU = 1
-    PLAY = 2
-    GAME_OVER = 3
+tracker = InputTracker()
 
+
+app = App(None)
+app.change_screen(MenuScreen(app, Game))
 
 def update():
-    global state, game
+    input_state = tracker.build(keyboard)
+    app.update(input_state)
+    tracker.advance(keyboard)
 
-    if state == State.MENU:
-        if space_pressed():
-            # Switch to play state, and create a new Game object, passing it a new Player object to use
-            state = State.PLAY
-            game = Game(Player())
-        else:
-            game.update()
-
-    elif state == State.PLAY:
-        if game.player.lives < 0:
-            game.play_sound("over")
-            state = State.GAME_OVER
-        else:
-            game.update()
-
-    elif state == State.GAME_OVER:
-        if space_pressed():
-            # Switch to menu state, and create a new game object without a player
-            state = State.MENU
-            game = Game()
 
 def draw():
-    game.draw()
-
-    if state == State.MENU:
-        # Draw title screen
-        screen.blit("title", (0, 0))
-
-        # Draw "Press SPACE" animation, which has 10 frames numbered 0 to 9
-        # The first part gives us a number between 0 and 159, based on the game timer
-        # Dividing by 4 means we go to a new animation frame every 4 frames
-        # We enclose this calculation in the min function, with the other argument being 9, which results in the
-        # animation staying on frame 9 for three quarters of the time. Adding 40 to the game timer is done to alter
-        # which stage the animation is at when the game first starts
-        anim_frame = min(((game.timer + 40) % 160) // 4, 9)
-        screen.blit("space" + str(anim_frame), (130, 280))
-
-    elif state == State.PLAY:
-        draw_status()
-
-    elif state == State.GAME_OVER:
-        draw_status()
-        # Display "Game Over" image
-        screen.blit("over", (0, 0))
-
-# Set up sound system and start music
-try:
-    pygame.mixer.quit()
-    pygame.mixer.init(44100, -16, 2, 1024)
-
-    music.play("theme")
-    music.set_volume(0.3)
-except:
-    # If an error occurs, just ignore it
-    pass
-
-
-
-# Set the initial game state
-state = State.MENU
-
-# Create a new Game object, without a Player object
-game = Game()
+    app.draw()
 
 pgzrun.go()
